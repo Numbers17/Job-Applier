@@ -1,0 +1,16 @@
+{
+  "first_name": "",
+  "last_name": "",
+  "email": "",
+  "phone": "",
+  "linkedin": "",
+  "github": "",
+  "school": "",
+  "degree": "",
+  "major": "",
+  "minor": "",
+  "graduation_date": "",
+  "location": "",
+  "resume_path": "./your_resume.pdf",
+  "default_referral_source": "LinkedIn"
+}

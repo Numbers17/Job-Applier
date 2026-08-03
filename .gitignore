@@ -1,0 +1,12 @@
+# Personal data -- never commit
+profile.json
+answers.json
+*.pdf
+output/
+
+# Python
+__pycache__/
+*.pyc
+
+# Playwright
+.playwright/
