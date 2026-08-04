@@ -66,6 +66,7 @@ def update_status(url: str, status: str) -> None:
     for row in rows:
         if row["url"] == url:
             row["status"] = status
+            row["status_updated"] = datetime.now().isoformat(timespec="seconds")
     write_candidate_rows(rows)
 
 

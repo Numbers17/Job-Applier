@@ -17,7 +17,7 @@ KEYWORD_PATTERNS = [
     r"data science",
 ]
 
-PRIORITY_RE = re.compile(r", ?WA\b|seattle|, ?CA\b|california", re.IGNORECASE)
+PRIORITY_RE = re.compile(r"\bWA\b|seattle|\bCA\b|california", re.IGNORECASE)
 
 
 def is_relevant_role(role: str) -> bool:

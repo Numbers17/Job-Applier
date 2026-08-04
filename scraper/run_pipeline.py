@@ -16,22 +16,31 @@ CSV_FIELDS = [
     "company",
     "role",
     "location",
+    "listing_type",
+    "source",
     "url",
     "date_posted",
     "ats",
     "grad_flag",
     "hardware_flag",
     "status",
+    "status_updated",
 ]
 
 
-def load_existing_status(path: Path) -> dict[str, str]:
-    """Preserve status (skip/applied/etc.) for URLs already reviewed in a prior run."""
+def load_existing_status(path: Path) -> dict[str, dict]:
+    """Preserve status/status_updated for URLs already reviewed in a prior run."""
     if not path.exists():
         return {}
     with path.open("r", encoding="utf-8", newline="") as f:
         reader = csv.DictReader(f)
-        return {row["url"]: row.get("status", "") for row in reader}
+        return {
+            row["url"]: {
+                "status": row.get("status", ""),
+                "status_updated": row.get("status_updated", ""),
+            }
+            for row in reader
+        }
 
 
 def run(limit: int) -> None:
@@ -45,24 +54,28 @@ def run(limit: int) -> None:
     print(f"Checking descriptions for grad-degree/hardware-management flags (limit={limit})...")
     checked = check_listings(filtered, limit=limit)
 
-    existing_status = load_existing_status(OUTPUT_PATH)
+    existing = load_existing_status(OUTPUT_PATH)
 
     OUTPUT_PATH.parent.mkdir(parents=True, exist_ok=True)
     with OUTPUT_PATH.open("w", encoding="utf-8", newline="") as f:
         writer = csv.DictWriter(f, fieldnames=CSV_FIELDS)
         writer.writeheader()
         for row in checked:
+            prior = existing.get(row["url"], {})
             writer.writerow(
                 {
                     "company": row["company"],
                     "role": row["role"],
                     "location": row["location"],
+                    "listing_type": row["listing_type"],
+                    "source": row["source"],
                     "url": row["url"],
                     "date_posted": row["date_posted"],
                     "ats": row["ats"],
                     "grad_flag": row["grad_flag"],
                     "hardware_flag": row["hardware_flag"],
-                    "status": existing_status.get(row["url"], ""),
+                    "status": prior.get("status", ""),
+                    "status_updated": prior.get("status_updated", ""),
                 }
             )
 
