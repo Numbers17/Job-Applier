@@ -20,6 +20,7 @@ from pathlib import Path
 
 from playwright.sync_api import sync_playwright
 
+import resume_library
 from ats import ashby, greenhouse, lever
 from ats._common import detect_closed_or_expired, dismiss_cookie_banner
 from describe_check import detect_ats
@@ -74,7 +75,9 @@ def _slug(text: str) -> str:
     return re.sub(r"[^a-z0-9]+", "-", text.lower()).strip("-")[:40]
 
 
-def process_posting(page, url: str, ats: str, profile: dict, run_dir: Path, index: int, interactive: bool) -> dict:
+def process_posting(
+    page, browser, url: str, ats: str, company: str, role: str, profile: dict, run_dir: Path, index: int, interactive: bool
+) -> dict:
     print(f"\n--- Opening [{ats}] {url}")
     log = {
         "timestamp": datetime.now().isoformat(timespec="seconds"),
@@ -83,6 +86,7 @@ def process_posting(page, url: str, ats: str, profile: dict, run_dir: Path, inde
         "apply_click": "not_needed",
         "page_title": None,
         "closed_or_expired": False,
+        "resume": None,
         "fields": {},
         "screenshot": None,
         "error": None,
@@ -105,6 +109,20 @@ def process_posting(page, url: str, ats: str, profile: dict, run_dir: Path, inde
             print(f"  Log: {log_path.relative_to(ROOT)}")
             return log
 
+        # Grab the JD text before any Apply click navigates Lever/Ashby away
+        # from the description page.
+        posting_profile = profile
+        try:
+            jd_text = page.inner_text("body")
+            resume_path, resume_decision = resume_library.select_or_generate(jd_text, company, role, jd_url=url, browser=browser)
+            log["resume"] = resume_decision
+            posting_profile = dict(profile)
+            posting_profile["resume_path"] = str(resume_path)
+            print(f"  Resume: {resume_decision['decision']} (similarity={resume_decision['similarity']}) -> {resume_path.name}")
+        except Exception as exc:  # noqa: BLE001 -- fall back to the default resume rather than abort the posting
+            log["resume"] = {"decision": "error", "error": str(exc)}
+            print(f"  [warn] resume tailoring failed, falling back to default resume: {exc}")
+
         if ats in NEEDS_APPLY_CLICK:
             try:
                 page.get_by_text("Apply", exact=False).first.click(timeout=5000)
@@ -116,7 +134,7 @@ def process_posting(page, url: str, ats: str, profile: dict, run_dir: Path, inde
                 print("  Navigate to the application form yourself, then come back to this terminal.")
 
         handler = HANDLERS[ats]
-        log["fields"] = handler(page, profile, interactive)
+        log["fields"] = handler(page, posting_profile, interactive)
 
         filled = [k for k, v in log["fields"].items() if v["status"] == "filled"]
         problems = {k: v["status"] for k, v in log["fields"].items() if v["status"] != "filled" and v["status"] != "skipped_no_value_in_profile"}
@@ -142,7 +160,7 @@ def process_posting(page, url: str, ats: str, profile: dict, run_dir: Path, inde
     return log
 
 
-def run(limit: int, single_url: str | None, headless: bool) -> None:
+def run(limit: int, single_url: str | None, headless: bool, company: str = "", role: str = "") -> None:
     profile = load_profile()
 
     if single_url:
@@ -150,7 +168,7 @@ def run(limit: int, single_url: str | None, headless: bool) -> None:
         if ats not in HANDLERS:
             print(f"'{ats}' isn't an autofill-supported ATS (only greenhouse/lever/ashby).")
             return
-        targets = [{"url": single_url, "ats": ats}]
+        targets = [{"url": single_url, "ats": ats, "company": company, "role": role}]
     else:
         if not CANDIDATES_PATH.exists():
             print(f"No {CANDIDATES_PATH} found -- run run_pipeline.py first.")
@@ -174,7 +192,10 @@ def run(limit: int, single_url: str | None, headless: bool) -> None:
         page = browser.new_page()
         interactive = not headless
         for i, row in enumerate(targets, start=1):
-            process_posting(page, row["url"], row["ats"], profile, run_dir, i, interactive)
+            process_posting(
+                page, browser, row["url"], row["ats"], row.get("company", ""), row.get("role", ""),
+                profile, run_dir, i, interactive,
+            )
             if single_url:
                 if not headless:
                     input("  Press Enter to close...")
@@ -196,5 +217,7 @@ if __name__ == "__main__":
     parser.add_argument("--limit", type=int, default=5, help="Max postings to open this run (default: 5)")
     parser.add_argument("--url", type=str, default=None, help="Spot-check a single posting URL instead of reading the CSV")
     parser.add_argument("--headless", action="store_true", help="No visible browser/prompts -- just write logs+screenshots for review")
+    parser.add_argument("--company", type=str, default="", help="Company name, only used with --url (helps resume tailoring/reuse matching)")
+    parser.add_argument("--role", type=str, default="", help="Role title, only used with --url (helps resume tailoring/reuse matching)")
     args = parser.parse_args()
-    run(args.limit, args.url, args.headless)
+    run(args.limit, args.url, args.headless, args.company, args.role)

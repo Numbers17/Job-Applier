@@ -1,8 +1,12 @@
 # Personal data -- never commit
 profile.json
 answers.json
+experience_bank.json
 *.pdf
+*.tex
 output/
+.env
+resumes/
 
 # Python
 __pycache__/

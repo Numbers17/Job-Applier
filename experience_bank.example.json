@@ -1,0 +1,44 @@
+{
+  "header": {
+    "name": "",
+    "phone": "",
+    "email": "",
+    "linkedin": "",
+    "github": ""
+  },
+  "education": [
+    {
+      "school": "",
+      "location": "",
+      "detail": "",
+      "dates": ""
+    }
+  ],
+  "experience": [
+    {
+      "id": "example-employer",
+      "title": "",
+      "company": "",
+      "location": "",
+      "dates": "",
+      "bullets": [
+        {"id": "example-employer-1", "text": ""}
+      ]
+    }
+  ],
+  "projects": [
+    {
+      "id": "example-project",
+      "name": "",
+      "stack": "",
+      "bullets": [
+        {"id": "example-project-1", "text": ""}
+      ]
+    }
+  ],
+  "skills": {
+    "Languages": "",
+    "Frameworks": "",
+    "Developer Tools": ""
+  }
+}
