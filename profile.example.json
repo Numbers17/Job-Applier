@@ -12,5 +12,6 @@
   "graduation_date": "",
   "location": "",
   "resume_path": "./your_resume.pdf",
-  "default_referral_source": "LinkedIn"
+  "default_referral_source": "LinkedIn",
+  "resume_reuse_threshold": 0.3
 }

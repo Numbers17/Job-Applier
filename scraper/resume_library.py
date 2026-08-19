@@ -17,11 +17,11 @@ ROOT = Path(__file__).resolve().parent.parent
 RESUMES_DIR = ROOT / "resumes"
 MANIFEST_PATH = RESUMES_DIR / "manifest.json"
 BANK_PATH = ROOT / "experience_bank.json"
+PROFILE_PATH = ROOT / "profile.json"
 
-# Starting point, not tuned against real data yet -- adjust if reuse feels
-# too eager (near-different postings reusing the same resume) or too shy
-# (near-identical postings each regenerating).
-REUSE_SIMILARITY_THRESHOLD = 0.45
+# Fallback used only if profile.json has no "resume_reuse_threshold" --
+# normally overridden by that setting so it's tunable without touching code.
+DEFAULT_REUSE_SIMILARITY_THRESHOLD = 0.3
 COMPANY_ROLE_MATCH_BOOST = 0.15
 
 _STOPWORDS = {
@@ -44,6 +44,17 @@ def jaccard(a: set[str], b: set[str]) -> float:
     return len(a & b) / len(a | b)
 
 
+def load_reuse_threshold() -> float:
+    """Reads profile.json's "resume_reuse_threshold" so this is tunable
+    without touching code; falls back to DEFAULT_REUSE_SIMILARITY_THRESHOLD
+    if the file or field is missing.
+    """
+    if not PROFILE_PATH.exists():
+        return DEFAULT_REUSE_SIMILARITY_THRESHOLD
+    profile = json.loads(PROFILE_PATH.read_text(encoding="utf-8"))
+    return float(profile.get("resume_reuse_threshold", DEFAULT_REUSE_SIMILARITY_THRESHOLD))
+
+
 def load_manifest() -> list[dict]:
     if not MANIFEST_PATH.exists():
         return []
@@ -55,8 +66,12 @@ def save_manifest(entries: list[dict]) -> None:
     MANIFEST_PATH.write_text(json.dumps(entries, indent=2, ensure_ascii=False), encoding="utf-8")
 
 
-def find_reusable(jd_text: str, company: str, role: str, manifest: list[dict]) -> tuple[dict | None, float]:
+def find_reusable(
+    jd_text: str, company: str, role: str, manifest: list[dict], threshold: float | None = None
+) -> tuple[dict | None, float]:
     """Returns (best-matching manifest entry or None, its similarity score)."""
+    if threshold is None:
+        threshold = load_reuse_threshold()
     keywords = extract_keywords(jd_text)
     best_entry = None
     best_score = 0.0
@@ -67,7 +82,7 @@ def find_reusable(jd_text: str, company: str, role: str, manifest: list[dict]) -
         if score > best_score:
             best_score = score
             best_entry = entry
-    if best_entry and best_score >= REUSE_SIMILARITY_THRESHOLD:
+    if best_entry and best_score >= threshold:
         return best_entry, best_score
     return None, best_score
 
@@ -98,23 +113,29 @@ def _render_pdf(content: dict, out_path: Path, browser=None) -> None:
             b.close()
 
 
-def select_or_generate(jd_text: str, company: str, role: str, jd_url: str = "", browser=None) -> tuple[Path, dict]:
+def select_or_generate(
+    jd_text: str, company: str, role: str, jd_url: str = "", browser=None, threshold: float | None = None
+) -> tuple[Path, dict]:
     """Returns (resume_pdf_path, decision_info). decision_info always has a
     "decision" of "reused" or "generated" plus enough detail to log --
     matched variant + similarity score on reuse, or the fact-check's
     rejected-rewording audit on generation.
 
     Pass the caller's already-open Playwright `browser` when calling this
-    from inside another Playwright session (see _render_pdf).
+    from inside another Playwright session (see _render_pdf). `threshold`
+    defaults to profile.json's "resume_reuse_threshold" when omitted.
     """
+    if threshold is None:
+        threshold = load_reuse_threshold()
     manifest = load_manifest()
-    match, score = find_reusable(jd_text, company, role, manifest)
+    match, score = find_reusable(jd_text, company, role, manifest, threshold)
     if match:
         path = ROOT / match["path"]
         if path.exists():
             return path, {
                 "decision": "reused",
                 "similarity": round(score, 3),
+                "threshold": threshold,
                 "matched_variant": match["path"],
             }
         # manifest points at a file that's gone missing (moved/deleted) -- fall through and regenerate
@@ -144,5 +165,6 @@ def select_or_generate(jd_text: str, company: str, role: str, jd_url: str = "", 
     return out_path, {
         "decision": "generated",
         "similarity": round(score, 3),
+        "threshold": threshold,
         "rejected_rewordings": rejected,
     }
