@@ -87,8 +87,20 @@ def find_reusable(
     return None, best_score
 
 
-def _slug(text: str) -> str:
-    return re.sub(r"[^a-z0-9]+", "-", text.lower()).strip("-")[:50]
+def _next_resume_filename() -> str:
+    """Generic, sequential filenames (resume_0001.pdf, ...) rather than
+    company/role-derived ones -- a company/role-named file that gets reused
+    on a *different* company's application would visibly reveal it was
+    tailored for someone else, which looks bad to whoever's reviewing it.
+    Numbered off the existing files on disk (not just manifest length) so
+    it stays correct even if entries were added/removed by hand.
+    """
+    max_n = 0
+    for f in RESUMES_DIR.glob("resume_*.pdf"):
+        m = re.match(r"resume_(\d+)\.pdf$", f.name)
+        if m:
+            max_n = max(max_n, int(m.group(1)))
+    return f"resume_{max_n + 1:04d}.pdf"
 
 
 def _render_pdf(content: dict, out_path: Path, browser=None) -> None:
@@ -144,8 +156,7 @@ def select_or_generate(
     content, rejected = tailor(jd_text, company, role, bank)
 
     RESUMES_DIR.mkdir(parents=True, exist_ok=True)
-    date_str = datetime.now().strftime("%Y%m%d")
-    filename = f"{_slug(company)}-{_slug(role)}-{date_str}.pdf"
+    filename = _next_resume_filename()
     out_path = RESUMES_DIR / filename
     _render_pdf(content, out_path, browser)
 

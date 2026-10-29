@@ -115,7 +115,14 @@ def _bullets_html(bullets: list[str]) -> str:
     return f'<ul class="bullets">{items}</ul>'
 
 
-def _experience_section(entries: list[dict]) -> str:
+def _role_entries_section(entries: list[dict], heading: str) -> str:
+    """Renders a section shaped like Experience or Leadership -- entries
+    with title/location on one row and company/dates italicized below.
+    Omitted entirely if there are no entries (e.g. a tailored resume that
+    dropped every leadership entry for a given role).
+    """
+    if not entries:
+        return ""
     rows = []
     for e in entries:
         rows.append(f"""
@@ -124,7 +131,7 @@ def _experience_section(entries: list[dict]) -> str:
           <div class="entry-subrow"><span>{_esc(e.get('company',''))}</span><span>{_esc(e.get('dates',''))}</span></div>
           {_bullets_html(e.get('bullets', []))}
         </div>""")
-    return f"<section><h2>Experience</h2>{''.join(rows)}</section>"
+    return f"<section><h2>{_esc(heading)}</h2>{''.join(rows)}</section>"
 
 
 def _projects_section(entries: list[dict]) -> str:
@@ -152,8 +159,9 @@ def render_html(content: dict) -> str:
             f'<div class="header"><div class="name">{_esc(header.get("name",""))}</div>'
             f'<div class="contact">{_contact_line(header)}</div></div>',
             _education_section(content.get("education", [])),
-            _experience_section(content.get("experience", [])),
+            _role_entries_section(content.get("experience", []), "Experience"),
             _projects_section(content.get("projects", [])),
+            _role_entries_section(content.get("leadership", []), "Leadership"),
             _skills_section(content.get("skills", {})),
         ]
     )

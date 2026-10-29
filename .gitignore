@@ -4,9 +4,11 @@ answers.json
 experience_bank.json
 *.pdf
 *.tex
+*.docx
 output/
 .env
 resumes/
+old-resumes/
 
 # Python
 __pycache__/
@@ -14,3 +16,7 @@ __pycache__/
 
 # Playwright
 .playwright/
+
+# Persistent browser profile (real login sessions/cookies -- more sensitive
+# than profile.json)
+.browser_profile/

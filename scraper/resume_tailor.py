@@ -57,9 +57,9 @@ def check_rewording(original: str, reworded: str) -> tuple[bool, list[str]]:
 SYSTEM_PROMPT = """You are tailoring a candidate's resume to a specific job posting.
 
 You are given the candidate's full experience bank (JSON) and a job description. \
-Decide which experience and project entries to include and in what order, and \
-which bullets within each to include, in what order, and whether to lightly \
-reword them for keyword alignment with the job description.
+Decide which experience, project, and leadership entries to include and in what \
+order, and which bullets within each to include, in what order, and whether to \
+lightly reword them for keyword alignment with the job description.
 
 STRICT RULES -- these are non-negotiable:
 - Never invent, exaggerate, add, or alter any fact, number, percentage, \
@@ -70,62 +70,59 @@ quantitative claim exactly as stated in the original.
 the bullet unchanged.
 - Reference bullets and entries only by their existing ids from the experience \
 bank. Never invent an id.
-- Only omit an experience or project entry if it is clearly irrelevant to the \
-role; when in doubt, include it.
+- Only omit an experience, project, or leadership entry if it is clearly \
+irrelevant to the role; when in doubt, include it.
+- Leadership entries (clubs, officer roles, etc.) are usually lower priority \
+than paid experience and projects -- include them when they add relevant signal \
+(e.g. communication, organizing, teamwork) but it's fine to omit all of them for \
+a role where they wouldn't help.
 - Within an included entry, keep most of its bullets -- only drop one if the \
 resume clearly benefits from the cut, not just because it seems less relevant.
 - Output only the structured selection. Do not add commentary."""
+
+def _entry_selection_schema(id_description: str) -> dict:
+    """Schema for a list of {id, bullets} selections -- identical shape for
+    experience, project, and leadership entries, so this is built once.
+    """
+    return {
+        "type": "array",
+        "items": {
+            "type": "object",
+            "properties": {
+                "id": {"type": "string", "description": id_description},
+                "bullets": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "bullet_id": {"type": "string"},
+                            "reworded_text": {"anyOf": [{"type": "string"}, {"type": "null"}]},
+                        },
+                        "required": ["bullet_id", "reworded_text"],
+                        "additionalProperties": False,
+                    },
+                },
+            },
+            "required": ["id", "bullets"],
+            "additionalProperties": False,
+        },
+    }
+
 
 OUTPUT_SCHEMA = {
     "type": "object",
     "properties": {
         "experience": {
-            "type": "array",
             "description": "Experience entries to include, in display order.",
-            "items": {
-                "type": "object",
-                "properties": {
-                    "id": {"type": "string", "description": "Experience entry id from the bank"},
-                    "bullets": {
-                        "type": "array",
-                        "items": {
-                            "type": "object",
-                            "properties": {
-                                "bullet_id": {"type": "string"},
-                                "reworded_text": {"anyOf": [{"type": "string"}, {"type": "null"}]},
-                            },
-                            "required": ["bullet_id", "reworded_text"],
-                            "additionalProperties": False,
-                        },
-                    },
-                },
-                "required": ["id", "bullets"],
-                "additionalProperties": False,
-            },
+            **_entry_selection_schema("Experience entry id from the bank"),
         },
         "projects": {
-            "type": "array",
             "description": "Project entries to include, in display order.",
-            "items": {
-                "type": "object",
-                "properties": {
-                    "id": {"type": "string", "description": "Project entry id from the bank"},
-                    "bullets": {
-                        "type": "array",
-                        "items": {
-                            "type": "object",
-                            "properties": {
-                                "bullet_id": {"type": "string"},
-                                "reworded_text": {"anyOf": [{"type": "string"}, {"type": "null"}]},
-                            },
-                            "required": ["bullet_id", "reworded_text"],
-                            "additionalProperties": False,
-                        },
-                    },
-                },
-                "required": ["id", "bullets"],
-                "additionalProperties": False,
-            },
+            **_entry_selection_schema("Project entry id from the bank"),
+        },
+        "leadership": {
+            "description": "Leadership entries to include, in display order.",
+            **_entry_selection_schema("Leadership entry id from the bank"),
         },
         "skills_order": {
             "type": "array",
@@ -133,7 +130,7 @@ OUTPUT_SCHEMA = {
             "description": "Skill category names from the bank's skills object, in priority order.",
         },
     },
-    "required": ["experience", "projects", "skills_order"],
+    "required": ["experience", "projects", "leadership", "skills_order"],
     "additionalProperties": False,
 }
 
@@ -166,24 +163,18 @@ def _resolve_bullets(bullet_sels: list[dict], bullets_by_id: dict, rejected: lis
     return bullets
 
 
-def _resolve(selection: dict, bank: dict) -> tuple[dict, list[dict]]:
-    """Turns the model's id-based selection back into plain-text content,
-    pulling every fact directly from the bank -- never from model output.
-    Returns (content, rejected_rewordings) so callers can log any bullet
-    where the fact-check rejected the model's reworded text.
+def _resolve_role_entries(entry_sels: list[dict], entries_by_id: dict, rejected: list[dict]) -> list[dict]:
+    """Resolves a list of {id, bullets} selections against entries shaped
+    like experience/leadership (title/company/location/dates/bullets).
     """
-    exp_by_id = {e["id"]: e for e in bank["experience"]}
-    proj_by_id = {p["id"]: p for p in bank["projects"]}
-    rejected: list[dict] = []
-
-    resolved_experience = []
-    for entry_sel in selection.get("experience", []):
-        src = exp_by_id.get(entry_sel.get("id"))
+    resolved = []
+    for entry_sel in entry_sels:
+        src = entries_by_id.get(entry_sel.get("id"))
         if not src:
             continue  # model referenced an id that doesn't exist -- drop it, don't guess
         bullets_by_id = {b["id"]: b["text"] for b in src["bullets"]}
         bullets = _resolve_bullets(entry_sel.get("bullets", []), bullets_by_id, rejected, src["id"])
-        resolved_experience.append(
+        resolved.append(
             {
                 "title": src["title"],
                 "company": src["company"],
@@ -192,6 +183,22 @@ def _resolve(selection: dict, bank: dict) -> tuple[dict, list[dict]]:
                 "bullets": bullets,
             }
         )
+    return resolved
+
+
+def _resolve(selection: dict, bank: dict) -> tuple[dict, list[dict]]:
+    """Turns the model's id-based selection back into plain-text content,
+    pulling every fact directly from the bank -- never from model output.
+    Returns (content, rejected_rewordings) so callers can log any bullet
+    where the fact-check rejected the model's reworded text.
+    """
+    exp_by_id = {e["id"]: e for e in bank["experience"]}
+    lead_by_id = {e["id"]: e for e in bank.get("leadership", [])}
+    proj_by_id = {p["id"]: p for p in bank["projects"]}
+    rejected: list[dict] = []
+
+    resolved_experience = _resolve_role_entries(selection.get("experience", []), exp_by_id, rejected)
+    resolved_leadership = _resolve_role_entries(selection.get("leadership", []), lead_by_id, rejected)
 
     resolved_projects = []
     for entry_sel in selection.get("projects", []):
@@ -212,6 +219,7 @@ def _resolve(selection: dict, bank: dict) -> tuple[dict, list[dict]]:
         "education": bank["education"],
         "experience": resolved_experience,
         "projects": resolved_projects,
+        "leadership": resolved_leadership,
         "skills": skills,
     }
     return content, rejected

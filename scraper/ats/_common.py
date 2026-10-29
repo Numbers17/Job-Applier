@@ -7,7 +7,7 @@ not just a bare "it worked" label.
 """
 import re
 
-from answers_store import get_answer, save_answer
+from answers_store import find_similar, get_answer, save_answer
 
 STATUS_FILLED = "filled"
 STATUS_SKIPPED_NO_VALUE = "skipped_no_value_in_profile"
@@ -16,6 +16,16 @@ STATUS_ERROR = "error"
 STATUS_UNANSWERED = "unanswered_needs_review"
 
 REFERRAL_QUESTION_RE = re.compile(r"how (did |do )?you hear", re.IGNORECASE)
+GRADUATION_YEAR_QUESTION_RE = re.compile(r"graduation year|graduation date", re.IGNORECASE)
+HIGH_SCHOOL_RE = re.compile(r"high school", re.IGNORECASE)
+
+
+def is_college_graduation_question(question: str) -> bool:
+    """True for "intended/expected graduation year" style questions, but
+    not "Year of High School Graduation" -- that's a separate, unrelated
+    question that should go through the normal saved-answer/prompt flow.
+    """
+    return bool(GRADUATION_YEAR_QUESTION_RE.search(question)) and not HIGH_SCHOOL_RE.search(question)
 
 
 def _record(results: dict, label: str, value, selector: str, status: str) -> None:
@@ -115,6 +125,28 @@ def clean_label(text: str) -> str:
     return re.sub(r"\s+", " ", text).strip()
 
 
+def _get_or_prompt(question: str, field_type: str, interactive: bool, prompt_fn):
+    """Cache lookup with a fuzzy-match fallback. An exact-text cache hit is
+    used immediately (handled by the caller before this runs). Otherwise,
+    if a similarly-worded question has been answered before, you're shown
+    it and asked once whether to reuse that answer -- confirmed, never
+    auto-applied -- before falling back to a fresh prompt_fn() call.
+    Returns None only when not interactive and nothing resolves.
+    """
+    if not interactive:
+        return None
+    similar, score = find_similar(question)
+    if similar:
+        print(f"\n  [similar question already answered] \"{similar['question']}\" -> {similar['value']!r} (similarity {score:.2f})")
+        reuse = input(f"  Reuse that answer for: \"{question}\"? [Enter=yes, n=no]: ").strip().lower()
+        if reuse not in ("n", "no"):
+            save_answer(question, field_type, similar["value"])
+            return similar["value"]
+    value = prompt_fn()
+    save_answer(question, field_type, value)
+    return value
+
+
 def prompt_choice(question: str, options: list[str]) -> str:
     print(f"\n  [needs your input] {question}")
     for i, opt in enumerate(options, 1):
@@ -164,7 +196,10 @@ def _best_match(value: str, options: list[str]) -> tuple[str | None, str | None]
     return None, f"no option matched '{value}' (available: {options[:8]})"
 
 
-def resolve_select(page, select_locator, question: str, label: str, results: dict, interactive: bool, profile: dict) -> None:
+def resolve_select(
+    page, select_locator, question: str, label: str, results: dict, interactive: bool, profile: dict,
+    listing_type: str = "",
+) -> None:
     """Handles a native <select> whose meaning isn't known ahead of time
     (e.g. a company-specific Lever question). Reuses a previously-saved
     answer for the same question text if one exists; otherwise prompts
@@ -182,18 +217,36 @@ def resolve_select(page, select_locator, question: str, label: str, results: dic
         _record(results, label, None, selector, f"{STATUS_ERROR}: {exc}")
         return
 
+    # Graduation year genuinely differs by whether this is an internship
+    # posting (may still be enrolled after) vs. a new-grad posting (expects
+    # to have graduated) -- computed fresh from profile.json every time and
+    # never cached via save_answer/get_answer, since a single cached value
+    # would be wrong for one context or the other.
+    if is_college_graduation_question(question):
+        field = "graduation_date_internship" if listing_type == "internship" else "graduation_date"
+        grad_date = profile.get(field) or profile.get("graduation_date")
+        if grad_date:
+            year = grad_date[:4]
+            match, error = _best_match(year, options)
+            target = match or year
+            try:
+                select_locator.select_option(label=target)
+                _record(results, label, year, selector, STATUS_FILLED)
+            except Exception as exc:  # noqa: BLE001
+                _record(results, label, year, selector, f"{STATUS_ERROR}: {exc}")
+            return
+
     saved = get_answer(question)
     if saved:
         value = saved["value"]
     elif REFERRAL_QUESTION_RE.search(question) and profile.get("default_referral_source"):
         value = profile["default_referral_source"]
         save_answer(question, "select", value)
-    elif interactive:
-        value = prompt_choice(question, options)
-        save_answer(question, "select", value)
     else:
-        _record(results, label, None, selector, STATUS_UNANSWERED)
-        return
+        value = _get_or_prompt(question, "select", interactive, lambda: prompt_choice(question, options))
+        if value is None:
+            _record(results, label, None, selector, STATUS_UNANSWERED)
+            return
 
     try:
         select_locator.select_option(label=value)
@@ -231,12 +284,11 @@ def resolve_radio_group(page, radios_locator, question: str, label: str, results
     saved = get_answer(question)
     if saved:
         value = saved["value"]
-    elif interactive:
-        value = prompt_choice(question, options)
-        save_answer(question, "radio", value)
     else:
-        _record(results, label, None, selector, STATUS_UNANSWERED)
-        return
+        value = _get_or_prompt(question, "radio", interactive, lambda: prompt_choice(question, options))
+        if value is None:
+            _record(results, label, None, selector, STATUS_UNANSWERED)
+            return
 
     match, error = _best_match(value, options)
     if error:
@@ -267,12 +319,13 @@ def resolve_checkbox_group(page, boxes_locator, question: str, label: str, resul
     saved = get_answer(question)
     if saved:
         values = saved["value"] if isinstance(saved["value"], list) else [saved["value"]]
-    elif interactive:
-        values = prompt_multi_choice(question, options)
-        save_answer(question, "checkbox_group", values)
     else:
-        _record(results, label, None, selector, STATUS_UNANSWERED)
-        return
+        values = _get_or_prompt(question, "checkbox_group", interactive, lambda: prompt_multi_choice(question, options))
+        if values is None:
+            _record(results, label, None, selector, STATUS_UNANSWERED)
+            return
+        if not isinstance(values, list):
+            values = [values]
 
     try:
         checked = []
@@ -291,6 +344,200 @@ def resolve_checkbox_group(page, boxes_locator, question: str, label: str, resul
         _record(results, label, checked, selector, status)
     except Exception as exc:  # noqa: BLE001
         _record(results, label, values, selector, f"{STATUS_ERROR}: {exc}")
+
+
+def _capture_label_for(page, locator) -> str:
+    """Question-label lookup for capture_answers(), combining every
+    strategy the individual ATS modules use (aria-label, fieldset/legend,
+    label[for=id], an ancestor <label>, an aria-labelledby'd group, and
+    Lever's .application-question/.application-label convention) since
+    this runs against whatever site you're currently on, not one known
+    ATS's fixed DOM shape.
+
+    fieldset/legend is checked before label[for=id] deliberately: for a
+    radio/checkbox passed in as `locator.first`, that input's own id maps
+    to its OPTION's label (e.g. "Yes"), not the question -- the fieldset
+    wrapping the whole group is the question. For a <select>, its own id
+    maps to the correct whole-field label either way, so the order doesn't
+    matter there.
+    """
+    try:
+        text = locator.evaluate(
+            """
+            el => {
+                const aria = el.getAttribute('aria-label');
+                if (aria) return aria;
+                const fieldset = el.closest('fieldset');
+                if (fieldset) {
+                    const legend = fieldset.querySelector('legend');
+                    if (legend) return legend.textContent;
+                }
+                if (el.id) {
+                    const lab = document.querySelector(`label[for="${el.id}"]`);
+                    if (lab) return lab.textContent;
+                }
+                const wrapping = el.closest('label');
+                if (wrapping) return wrapping.textContent;
+                const group = el.closest('[role="group"]');
+                if (group) {
+                    const labelledBy = group.getAttribute('aria-labelledby');
+                    if (labelledBy) {
+                        const labEl = document.getElementById(labelledBy.split(' ')[0]);
+                        if (labEl) return labEl.textContent;
+                    }
+                    const lab = group.querySelector('label');
+                    if (lab) return lab.textContent;
+                }
+                const appQuestion = el.closest('.application-question');
+                if (appQuestion) {
+                    const lab = appQuestion.querySelector('.application-label');
+                    if (lab) return lab.textContent;
+                }
+                return '';
+            }
+            """
+        )
+        return clean_label(text)
+    except Exception:  # noqa: BLE001
+        return ""
+
+
+_PLACEHOLDER_OPTION_RE = re.compile(r"^(select|choose|please select|click here)", re.IGNORECASE)
+
+_TEXT_LIKE_SELECTOR = (
+    'input:not([type="hidden"]):not([type="checkbox"]):not([type="radio"])'
+    ':not([type="file"]):not([type="submit"]):not([type="button"]), textarea'
+)
+
+
+def capture_answers(page) -> tuple[dict, list[dict]]:
+    """Scans the current page for <select>/radio-group/checkbox-group
+    questions that already have something chosen, and saves each one into
+    answers.json -- meant to be called after you've finished filling out
+    an application (by hand, or after an automated fill left something
+    for you to complete yourself) so it becomes reusable on future
+    postings, the same as an interactively-prompted answer.
+
+    Returns (captured, skipped). `captured` is {question: value} for
+    everything saved. `skipped` is a list of {"kind", "question", "reason"}
+    for everything this pass looked at but didn't save -- including
+    text/textarea fields with something typed in, which this never
+    captures (answers.json only stores select/radio/checkbox_group
+    answers; free-text custom questions are a fundamentally different,
+    less reusable kind of answer and are out of scope here). Surface
+    `skipped` to the user so "why didn't X get learned" is self-diagnosable
+    instead of a guessing game -- this only sees native HTML controls, so
+    a react-select-style combobox (e.g. Greenhouse's school/degree/major)
+    or a fully custom-rendered widget with no underlying
+    <select>/input[type=radio|checkbox] (common on Workday and other
+    heavily-custom sites) won't show up here at all, not even as a skip.
+
+    Graduation-year questions are deliberately skipped -- that answer is
+    context-dependent (internship vs. new-grad) and is never cached, by
+    design (see resolve_select). A checkbox group with nothing checked is
+    also skipped, since there's no way to tell "you intentionally left
+    this empty" apart from "you never got to it".
+    """
+    captured: dict = {}
+    skipped: list[dict] = []
+
+    selects = page.locator("select")
+    for i in range(selects.count()):
+        sel = selects.nth(i)
+        question = _capture_label_for(page, sel)
+        if not question:
+            skipped.append({"kind": "select", "question": "(unlabeled)", "reason": "couldn't find a question label for this field"})
+            continue
+        if is_college_graduation_question(question):
+            skipped.append({"kind": "select", "question": question, "reason": "graduation-year answers are never cached (context-dependent)"})
+            continue
+        try:
+            value = sel.evaluate(
+                "el => el.selectedIndex >= 0 ? el.options[el.selectedIndex].textContent : ''"
+            )
+        except Exception:  # noqa: BLE001
+            skipped.append({"kind": "select", "question": question, "reason": "couldn't read the selected option"})
+            continue
+        value = clean_label(value)
+        if not value or _PLACEHOLDER_OPTION_RE.match(value):
+            skipped.append({"kind": "select", "question": question, "reason": "still showing the placeholder option (nothing chosen)"})
+            continue
+        save_answer(question, "select", value)
+        captured[question] = value
+
+    radio_names = page.eval_on_selector_all("input[type=radio]", "els => [...new Set(els.map(e => e.name).filter(Boolean))]")
+    for name in radio_names:
+        group = page.locator(f'input[type=radio][name="{name}"]')
+        # :checked must be part of the same compound selector -- chaining
+        # it as group.locator(":checked") searches group's DESCENDANTS
+        # (radio inputs have none), not the group elements themselves.
+        checked = page.locator(f'input[type=radio][name="{name}"]:checked')
+        question = _capture_label_for(page, group.first) or "(unlabeled)"
+        if not checked.count():
+            skipped.append({"kind": "radio", "question": question, "reason": "nothing selected in this group"})
+            continue
+        if question == "(unlabeled)":
+            skipped.append({"kind": "radio", "question": question, "reason": "couldn't find a question label for this field"})
+            continue
+        rid = checked.first.get_attribute("id")
+        value = ""
+        if rid:
+            lab = page.locator(f'label[for="{rid}"]')
+            if lab.count():
+                value = clean_label(lab.first.text_content())
+        value = value or checked.first.get_attribute("value") or ""
+        if not value:
+            skipped.append({"kind": "radio", "question": question, "reason": "couldn't determine the selected option's label"})
+            continue
+        save_answer(question, "radio", value)
+        captured[question] = value
+
+    checkbox_names = page.eval_on_selector_all("input[type=checkbox]", "els => [...new Set(els.map(e => e.name).filter(Boolean))]")
+    for name in checkbox_names:
+        group = page.locator(f'input[type=checkbox][name="{name}"]')
+        checked = page.locator(f'input[type=checkbox][name="{name}"]:checked')
+        count = checked.count()
+        question = _capture_label_for(page, group.first) or "(unlabeled)"
+        if not count:
+            skipped.append({"kind": "checkbox_group", "question": question, "reason": "nothing checked in this group"})
+            continue
+        if question == "(unlabeled)":
+            skipped.append({"kind": "checkbox_group", "question": question, "reason": "couldn't find a question label for this field"})
+            continue
+        values = []
+        for i in range(count):
+            cb = checked.nth(i)
+            cid = cb.get_attribute("id")
+            v = ""
+            if cid:
+                lab = page.locator(f'label[for="{cid}"]')
+                if lab.count():
+                    v = clean_label(lab.first.text_content())
+            values.append(v or cb.get_attribute("value") or "")
+        values = [v for v in values if v]
+        if not values:
+            skipped.append({"kind": "checkbox_group", "question": question, "reason": "couldn't determine the checked options' labels"})
+            continue
+        save_answer(question, "checkbox_group", values)
+        captured[question] = values
+
+    text_fields = page.locator(_TEXT_LIKE_SELECTOR)
+    for i in range(text_fields.count()):
+        el = text_fields.nth(i)
+        try:
+            value = el.input_value()
+        except Exception:  # noqa: BLE001
+            continue
+        if not value.strip():
+            continue
+        question = _capture_label_for(page, el) or "(unlabeled)"
+        skipped.append({
+            "kind": "text",
+            "question": question,
+            "reason": "free-text fields aren't captured (answers.json only stores select/radio/checkbox answers)",
+        })
+
+    return captured, skipped
 
 
 CLOSED_PHRASES = [

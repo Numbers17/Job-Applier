@@ -36,6 +36,18 @@
       ]
     }
   ],
+  "leadership": [
+    {
+      "id": "example-leadership",
+      "title": "",
+      "company": "",
+      "location": "",
+      "dates": "",
+      "bullets": [
+        {"id": "example-leadership-1", "text": ""}
+      ]
+    }
+  ],
   "skills": {
     "Languages": "",
     "Frameworks": "",

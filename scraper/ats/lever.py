@@ -33,9 +33,11 @@ def _label_for(page, locator) -> str:
         return ""
 
 
-def fill(page, profile: dict, interactive: bool = True) -> dict:
+def fill(page, profile: dict, interactive: bool = True, listing_type: str = "") -> dict:
     """Returns {field_label: {value, selector, status}} for every field
-    attempted, so the caller can log exactly what was tried.
+    attempted, so the caller can log exactly what was tried. `listing_type`
+    ("internship" or "new_grad") lets resolve_select answer graduation-year
+    questions correctly for whichever context this posting is.
     """
     results: dict = {}
 
@@ -58,7 +60,7 @@ def fill(page, profile: dict, interactive: bool = True) -> dict:
         question = _label_for(page, sel)
         if not question:
             continue
-        resolve_select(page, sel, question, f"select::{name}", results, interactive, profile)
+        resolve_select(page, sel, question, f"select::{name}", results, interactive, profile, listing_type)
 
     # Radio-button questions (work authorization, EEOC veteran/disability, etc.)
     radio_names = page.eval_on_selector_all("input[type=radio]", "els => [...new Set(els.map(e => e.name))]")
